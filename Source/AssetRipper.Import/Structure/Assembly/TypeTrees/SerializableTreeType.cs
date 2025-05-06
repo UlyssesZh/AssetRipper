@@ -1,73 +1,81 @@
-﻿using AssetRipper.Import.Structure.Assembly.Serializable;
-using AssetRipper.IO.Files.SerializedFiles.Parser.TypeTrees;
+﻿using AssetRipper.SerializationLogic;
 using AssetRipper.SourceGenerated.Extensions;
+using System.Diagnostics;
 
 namespace AssetRipper.Import.Structure.Assembly.TypeTrees
 {
 	public sealed class SerializableTreeType : SerializableType
 	{
-		private SerializableTreeType(string? @namespace, string name, PrimitiveType type, int version) : base(@namespace, type, name)
+		private SerializableTreeType(string name, PrimitiveType type, int version, bool flowMappedInYaml) : base(null, type, name)
 		{
 			Version = version;
-		}
-
-		private SerializableTreeType(string name, PrimitiveType type, int version) : this(null, name, type, version)
-		{
+			FlowMappedInYaml = flowMappedInYaml;
 		}
 
 		public override int Version { get; }
+		public override bool FlowMappedInYaml { get; }
 
-		public static SerializableTreeType FromRootNode(TypeTreeNodeStruct rootNode)
+		public static SerializableTreeType FromRootNode(TypeTreeNodeStruct rootNode, bool monoBehaviourStructure = false)
 		{
-			SerializableTreeType serializableTreeType = new SerializableTreeType(rootNode.TypeName, PrimitiveType.Complex, rootNode.Version);
+			ToPrimititeType(rootNode, out string typeName, out PrimitiveType primitiveType, out int arrayDepth, out _, out TypeTreeNodeStruct primitiveNode);
+			Debug.Assert(arrayDepth == 0, "Array depth should be 0 for root node");
+			Debug.Assert(primitiveNode == rootNode, "Primitive node should be the same as root node");
+			Debug.Assert(!monoBehaviourStructure || primitiveType is PrimitiveType.Complex, "MonoBehaviour structure should be complex type");
+
+			SerializableTreeType serializableTreeType = new SerializableTreeType(typeName, primitiveType, rootNode.Version, rootNode.FlowMappedInYaml);
 
 			List<Field> fields = new();
-			int startIndex = FindStartingIndex(rootNode);
+			int startIndex = monoBehaviourStructure ? FindStartingIndexForMonoBehaviour(rootNode) : 0;
 			for (int i = startIndex; i < rootNode.SubNodes.Count; i++)
 			{
 				AddNode(rootNode.SubNodes[i], fields);
 			}
 			serializableTreeType.Fields = fields;
+			serializableTreeType.SetMaxDepth();
 			return serializableTreeType;
 		}
 
 		private static void AddNode(TypeTreeNodeStruct node, List<Field> fields)
 		{
-			ToPrimititeType(node, out PrimitiveType primitiveType, out int arrayDepth, out TypeTreeNodeStruct primitiveNode);
+			ToPrimititeType(node, out string typeName, out PrimitiveType primitiveType, out int arrayDepth, out bool alignBytes, out TypeTreeNodeStruct primitiveNode);
 
-			SerializableTreeType serializableTreeType;
-			if (primitiveType is PrimitiveType.Complex)
+			SerializableType serializableType;
+			if (primitiveType is PrimitiveType.Complex or PrimitiveType.Pair or PrimitiveType.MapPair)
 			{
 				if (primitiveNode.IsPPtr)
 				{
-					serializableTreeType = new SerializableTreeType("UnityEngine", "Object", primitiveType, primitiveNode.Version);
+					serializableType = SerializablePointerType.Shared;
 				}
 				else
 				{
-					serializableTreeType = FromComplexNode(node.TypeName, primitiveNode);
+					serializableType = FromStructureNode(typeName, primitiveNode, primitiveType);
 				}
 			}
 			else
 			{
-				serializableTreeType = new SerializableTreeType(node.TypeName, primitiveType, primitiveNode.Version);
+				serializableType = new SerializableTreeType(typeName, primitiveType, primitiveNode.Version, primitiveNode.FlowMappedInYaml)
+				{
+					MaxDepth = 0
+				};
 			}
 
-			fields.Add(new Field(serializableTreeType, arrayDepth, node.Name));
+			fields.Add(new Field(serializableType, arrayDepth, node.Name, alignBytes));
 		}
 
-		private static SerializableTreeType FromComplexNode(string name, TypeTreeNodeStruct node)
+		private static SerializableTreeType FromStructureNode(string name, TypeTreeNodeStruct node, PrimitiveType type)
 		{
-			SerializableTreeType serializableTreeType = new SerializableTreeType(name, PrimitiveType.Complex, node.Version);
+			SerializableTreeType serializableTreeType = new SerializableTreeType(name, type, node.Version, node.FlowMappedInYaml);
 			List<Field> fields = new();
 			foreach (TypeTreeNodeStruct subNode in node.SubNodes)
 			{
 				AddNode(subNode, fields);
 			}
 			serializableTreeType.Fields = fields;
+			serializableTreeType.SetMaxDepth();
 			return serializableTreeType;
 		}
 
-		private static int FindStartingIndex(TypeTreeNodeStruct rootNode)
+		private static int FindStartingIndexForMonoBehaviour(TypeTreeNodeStruct rootNode)
 		{
 			int nameIndex = rootNode.SubNodes.IndexOf(node => node.Name == "m_Name");
 			int editorClassIdIndex = rootNode.SubNodes.IndexOf(node => node.Name == "m_EditorClassIdentifier");
@@ -75,29 +83,50 @@ namespace AssetRipper.Import.Structure.Assembly.TypeTrees
 			return startIndex;
 		}
 
-		private static void ToPrimititeType(TypeTreeNodeStruct node, out PrimitiveType primitiveType, out int arrayDepth, out TypeTreeNodeStruct primitiveNode)
+		private static void ToPrimititeType(TypeTreeNodeStruct node, out string typeName, out PrimitiveType primitiveType, out int arrayDepth, out bool alignBytes, out TypeTreeNodeStruct primitiveNode)
 		{
+			bool isMap = false;
+			alignBytes = false;
+			typeName = "";
 			arrayDepth = 0;
 			while (true)
 			{
+				alignBytes |= node.AlignBytes;
 				if (node.IsArray)
 				{
 					arrayDepth++;
-					node = node.SubNodes[1];
+					node = node[1];
 				}
-				else if (node.IsVector || node.IsNamedVector)
+				else if (node.IsVector)
 				{
+					alignBytes |= node[0].AlignBytes;
 					arrayDepth++;
-					node = node.SubNodes[0].SubNodes[1];
+					node = node[0][1];
+				}
+				else if (node.IsNamedVector)
+				{
+					//It's important that typeName is set before node is reassigned.
+					SetIfEmpty(ref typeName, node.TypeName);
+					alignBytes |= node[0].AlignBytes;
+					arrayDepth++;
+					node = node[0][1];
+				}
+				else if (node.IsMap)
+				{
+					isMap = true;
+					alignBytes |= node[0].AlignBytes;
+					arrayDepth++;
+					node = node[0][1];
 				}
 				else
 				{
+					SetIfEmpty(ref typeName, node.TypeName);
 					break;
 				}
 			}
 
 
-			primitiveType = node.SubNodes.Count == 0
+			primitiveType = node.Count == 0
 				? node.TypeName switch
 				{
 					"bool" => PrimitiveType.Bool,
@@ -111,15 +140,34 @@ namespace AssetRipper.Import.Structure.Assembly.TypeTrees
 					"UInt64" or "FileSize" or "unsigned long long" => PrimitiveType.ULong,
 					"float" => PrimitiveType.Single,
 					"double" => PrimitiveType.Double,
-					"half" => PrimitiveType.Half,
 					_ => PrimitiveType.Complex,
 				}
-				: node.TypeName switch
+				: false switch
 				{
-					"string" => PrimitiveType.String,
+					_ when node.IsString => PrimitiveType.String,
+					_ when node.IsPair => isMap ? PrimitiveType.MapPair : PrimitiveType.Pair,
 					_ => PrimitiveType.Complex,
 				};
 			primitiveNode = node;
+
+			static void SetIfEmpty(ref string local, string value)
+			{
+				if (string.IsNullOrEmpty(local))
+				{
+					local = value;
+				}
+			}
+		}
+
+		private void SetMaxDepth()
+		{
+			int maxDepth = 0;
+			foreach (Field field in Fields)
+			{
+				Debug.Assert(field.Type.IsMaxDepthKnown, "The depth of this type is not known.");
+				maxDepth = Math.Max(maxDepth, field.Type.MaxDepth + 1);
+			}
+			MaxDepth = maxDepth;
 		}
 	}
 }

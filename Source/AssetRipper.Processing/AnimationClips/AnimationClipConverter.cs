@@ -77,6 +77,7 @@ namespace AssetRipper.Processing.AnimationClips
 			Span<float> curveValues = [0, 0, 0, 0];
 			Span<float> inSlopeValues = [0, 0, 0, 0];
 			Span<float> outSlopeValues = [0, 0, 0, 0];
+			bool UseNegInfSlopes = m_clip.SupportsNegativeInfinitySlopes();
 
 			if (streamedFrames.Count > 1)
 			{
@@ -111,7 +112,7 @@ namespace AssetRipper.Processing.AnimationClips
 								if (TryGetNextFrame(streamedFrames, frameIdx, curveID, out StreamedFrame? nextFrame, out int nextCurveIdx))
 								{
 									StreamedCurveKey nextCurve = nextFrame.Curves[nextCurveIdx + offset];
-									curve.CalculateSlopes(frame.Time, nextFrame.Time, nextCurve);
+									curve.CalculateSlopes(frame.Time, nextFrame.Time, nextCurve, UseNegInfSlopes);
 								}
 							}
 							curveValues[offset] = curve.Value;
@@ -119,7 +120,7 @@ namespace AssetRipper.Processing.AnimationClips
 							outSlopeValues[offset] = curve.OutSlope;
 							curveIdx++;
 						}
-						AddTransformCurve(frame.Time, binding.TransformType(), curveValues, inSlopeValues, outSlopeValues, 0, path);
+						AddTransformCurve(frame.Time, binding, curveValues, inSlopeValues, outSlopeValues, 0, path);
 						continue;
 					}
 					curve = frame.Curves[curveIdx];
@@ -135,7 +136,7 @@ namespace AssetRipper.Processing.AnimationClips
 							if (TryGetNextFrame(streamedFrames, frameIdx, curveID, out StreamedFrame? nextFrame, out int nextCurveIdx))
 							{
 								StreamedCurveKey nextCurve = nextFrame.Curves[nextCurveIdx];
-								curve.CalculateSlopes(frame.Time, nextFrame.Time, nextCurve);
+								curve.CalculateSlopes(frame.Time, nextFrame.Time, nextCurve, UseNegInfSlopes);
 							}
 						}
 					}
@@ -172,7 +173,7 @@ namespace AssetRipper.Processing.AnimationClips
 					int framePosition = frameOffset + curveIndex;
 					if (binding.IsTransform())
 					{
-						AddTransformCurve(time, binding.TransformType(), curveValues, slopeValues, slopeValues, framePosition, path);
+						AddTransformCurve(time, binding, curveValues, slopeValues, slopeValues, framePosition, path);
 						curveIndex += binding.TransformType().GetDimension();
 					}
 					else if (binding.CustomType == (byte)BindingCustomType.None)
@@ -209,7 +210,7 @@ namespace AssetRipper.Processing.AnimationClips
 					string path = GetCurvePath(binding.Path);
 					if (binding.IsTransform())
 					{
-						AddTransformCurve(time, binding.TransformType(), curveValues, slopeValues, slopeValues, curveIndex, path);
+						AddTransformCurve(time, binding, curveValues, slopeValues, slopeValues, curveIndex, path);
 						curveIndex += binding.TransformType().GetDimension();
 					}
 					else if (binding.CustomType == (byte)BindingCustomType.None)
@@ -250,10 +251,10 @@ namespace AssetRipper.Processing.AnimationClips
 			}
 		}
 
-		private void AddTransformCurve(float time, TransformType transType, ReadOnlySpan<float> curveValues,
+		private void AddTransformCurve(float time, IGenericBinding binding, ReadOnlySpan<float> curveValues,
 			ReadOnlySpan<float> inSlopeValues, ReadOnlySpan<float> outSlopeValues, int offset, string path)
 		{
-			switch (transType)
+			switch (binding.TransformType())
 			{
 				case TransformType.Translation:
 					{
@@ -372,7 +373,7 @@ namespace AssetRipper.Processing.AnimationClips
 								break;
 							}
 							curve = m_clip.EulerCurves_C74.AddNew();
-							curve.SetValues(path);
+							curve.SetValues(path, (RotationOrder)binding.CustomType);
 							m_eulers.Add(path, curve);
 						}
 
@@ -403,7 +404,7 @@ namespace AssetRipper.Processing.AnimationClips
 					break;
 
 				default:
-					throw new NotImplementedException(transType.ToString());
+					throw new NotImplementedException(binding.TransformType().ToString());
 			}
 		}
 
@@ -412,7 +413,7 @@ namespace AssetRipper.Processing.AnimationClips
 			switch (binding.GetClassID())
 			{
 				case ClassIDType.GameObject:
-					AddGameObjectCurve(binding, path, time, value);
+					AddGameObjectCurve(binding, path, time, value, inTangent, outTangent);
 					break;
 
 				case ClassIDType.MonoBehaviour:
@@ -425,18 +426,18 @@ namespace AssetRipper.Processing.AnimationClips
 			}
 		}
 
-		private void AddGameObjectCurve(IGenericBinding binding, string path, float time, float value)
+		private void AddGameObjectCurve(IGenericBinding binding, string path, float time, float value, float inTangent, float outTangent)
 		{
 			if (GameObject.TryGetPath(binding.Attribute, out string? propertyName))
 			{
 				CurveData curve = new(path, propertyName, ClassIDType.GameObject);
-				AddFloatKeyframe(curve, time, value, 0, 0);
+				AddFloatKeyframe(curve, time, value, inTangent, outTangent);
 			}
 			else
 			{
 				// that means that dev exported animation clip with missing component
 				CurveData curve = new(path, GetReversedPath(MissedPropertyPrefix, binding.Attribute), ClassIDType.GameObject);
-				AddFloatKeyframe(curve, time, value, 0, 0);
+				AddFloatKeyframe(curve, time, value, inTangent, outTangent);
 			}
 		}
 

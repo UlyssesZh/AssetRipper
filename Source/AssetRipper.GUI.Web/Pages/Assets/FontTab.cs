@@ -1,47 +1,39 @@
-﻿using AssetRipper.Assets;
-using AssetRipper.SourceGenerated.Classes.ClassID_128;
+using AssetRipper.Assets;
+using AssetRipper.GUI.Web.Paths;
 
 namespace AssetRipper.GUI.Web.Pages.Assets;
 
-internal sealed class FontTab : HtmlTab
+internal sealed class FontTab : AssetHtmlTab
 {
-	public byte[] Data { get; }
-
-	public string? FileName { get; }
+	public string Url { get; }
 
 	public override string DisplayName => Localization.AssetTabFont;
 
 	public override string HtmlName => "font";
 
-	public override bool Enabled => Data.Length > 0;
+	public override bool Enabled => AssetAPI.HasFontData(Asset);
 
-	public FontTab(IUnityObjectBase asset)
+	public FontTab(IUnityObjectBase asset, AssetPath path) : base(asset)
 	{
-		if (asset is IFont font)
-		{
-			Data = font.FontData;
-			if (Data is { Length: >= 4 })
-			{
-				FileName = $"{font.GetBestName()}.{(Data[0], Data[1], Data[2], Data[3]) switch
-				{
-					(0x4F, 0x54, 0x54, 0x4F) => "otf",
-					(0x00, 0x01, 0x00, 0x00) => "ttf",
-					(0x74, 0x74, 0x63, 0x66) => "ttc",
-					_ => "",
-				}}";
-			}
-		}
-		else
-		{
-			Data = [];
-		}
+		Url = AssetAPI.GetFontUrl(path);
 	}
 
 	public override void Write(TextWriter writer)
 	{
 		using (new Div(writer).WithClass("text-center").End())
 		{
-			DataSaveButton.Write(writer, FileName, Data);
+			new H1(writer).WithStyle($"font-family: {Asset.GetBestName()}").Close("Preview Font (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)");
+
+			SaveButton.Write(writer, Url);
+
+			new Script(writer).Close(
+				$$"""
+				  const fontFace = new FontFace(`{{Asset.GetBestName()}}`, `url({{Url}})`);
+				  document.fonts.add(fontFace);
+				  fontFace.load().then().catch(function(error) {
+				    console.error(`Font loading failed: ${error}`);
+				  });
+				  """);
 		}
 	}
 }

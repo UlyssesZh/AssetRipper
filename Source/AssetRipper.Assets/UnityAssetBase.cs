@@ -1,10 +1,8 @@
 ﻿using AssetRipper.Assets.Cloning;
-using AssetRipper.Assets.Export;
 using AssetRipper.Assets.IO.Writing;
 using AssetRipper.Assets.Metadata;
 using AssetRipper.Assets.Traversal;
 using AssetRipper.IO.Endian;
-using AssetRipper.Yaml;
 using System.Runtime.CompilerServices;
 
 namespace AssetRipper.Assets;
@@ -18,6 +16,8 @@ public abstract class UnityAssetBase : IUnityAssetBase
 
 	public virtual bool FlowMappedInYaml => false;
 
+	public virtual bool IgnoreFieldInMetaFiles(string fieldName) => false;
+
 	public virtual void ReadEditor(ref EndianSpanReader reader) => throw MethodNotSupported();
 
 	public virtual void ReadRelease(ref EndianSpanReader reader) => throw MethodNotSupported();
@@ -25,10 +25,6 @@ public abstract class UnityAssetBase : IUnityAssetBase
 	public virtual void WriteEditor(AssetWriter writer) => throw MethodNotSupported();
 
 	public virtual void WriteRelease(AssetWriter writer) => throw MethodNotSupported();
-
-	public virtual YamlNode ExportYamlEditor(IExportContainer container) => throw MethodNotSupported();
-
-	public virtual YamlNode ExportYamlRelease(IExportContainer container) => throw MethodNotSupported();
 
 	public virtual IEnumerable<(string, PPtr)> FetchDependencies()
 	{
@@ -53,6 +49,15 @@ public abstract class UnityAssetBase : IUnityAssetBase
 
 	public virtual void WalkStandard(AssetWalker walker)
 	{
+		if (walker.EnterAsset(this))
+		{
+			walker.ExitAsset(this);
+		}
+	}
+
+	public virtual bool? AddToEqualityComparer(IUnityAssetBase other, AssetEqualityComparer comparer)
+	{
+		throw MethodNotSupported();
 	}
 
 	private NotSupportedException MethodNotSupported([CallerMemberName] string? methodName = null)

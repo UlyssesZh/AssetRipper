@@ -15,6 +15,7 @@ namespace AssetRipper.Export.UnityProjects.Scripts
 		public LanguageVersion LanguageVersion { get; set; } = LanguageVersion.CSharp7_3;
 		public ScriptContentLevel ScriptContentLevel { get; set; } = ScriptContentLevel.Level2;
 		public ScriptingBackend ScriptingBackend { get; set; } = ScriptingBackend.Unknown;
+		public bool FullyQualifiedTypeNames { get; set; } = false;
 
 		public ScriptDecompiler(IAssemblyManager assemblyManager) : this(new CecilAssemblyResolver(assemblyManager), assemblyManager.ScriptingBackend) { }
 		private ScriptDecompiler(CecilAssemblyResolver cecilAssemblyResolver, ScriptingBackend scriptingBackend)
@@ -23,7 +24,7 @@ namespace AssetRipper.Export.UnityProjects.Scripts
 			ScriptingBackend = scriptingBackend;
 		}
 
-		public void DecompileWholeProject(AssemblyDefinition assembly, string outputFolder)
+		public void DecompileWholeProject(AssemblyDefinition assembly, string outputFolder, FileSystem fileSystem)
 		{
 			DecompilerSettings settings = new();
 
@@ -35,7 +36,13 @@ namespace AssetRipper.Export.UnityProjects.Scripts
 			settings.UseSdkStyleProjectFormat = false;//sdk style can throw and we don't use the csproj file at all
 			settings.UseNestedDirectoriesForNamespaces = true;
 
-			WholeProjectDecompiler decompiler = new(settings, assemblyResolver, null, null);
+			if (FullyQualifiedTypeNames)
+			{
+				settings.AlwaysUseGlobal = true;
+				settings.UsingDeclarations = false;
+			}
+
+			CustomWholeProjectDecompiler decompiler = new(settings, assemblyResolver, fileSystem);
 
 			DecompileWholeProject(decompiler, assembly, outputFolder);
 		}
@@ -49,6 +56,28 @@ namespace AssetRipper.Export.UnityProjects.Scripts
 			catch (Exception exception)
 			{
 				Logger.Error(exception);
+			}
+		}
+
+		private sealed class CustomWholeProjectDecompiler(DecompilerSettings settings, CecilAssemblyResolver assemblyResolver, FileSystem fileSystem) : WholeProjectDecompiler(settings, assemblyResolver, null, null, null)
+		{
+			protected override void CreateDirectory(string path)
+			{
+				try
+				{
+					fileSystem.Directory.Create(path);
+				}
+				catch (IOException)
+				{
+					fileSystem.File.Delete(path);
+					fileSystem.Directory.Create(path);
+				}
+			}
+
+			protected override TextWriter CreateFile(string path)
+			{
+				Stream stream = fileSystem.File.Create(path);
+				return new StreamWriter(stream);
 			}
 		}
 	}

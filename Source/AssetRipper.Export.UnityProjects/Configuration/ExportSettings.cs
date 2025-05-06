@@ -1,4 +1,5 @@
-﻿using AssetRipper.Import.Logging;
+﻿using AssetRipper.Export.Modules.Textures;
+using AssetRipper.Import.Logging;
 
 namespace AssetRipper.Export.UnityProjects.Configuration;
 
@@ -15,9 +16,9 @@ public sealed record class ExportSettings
 	public ImageExportFormat ImageExportFormat { get; set; } = ImageExportFormat.Png;
 
 	/// <summary>
-	/// The format that meshes get exported in. Recommended: Native
+	/// The file format that images (like textures) get exported in.
 	/// </summary>
-	public MeshExportFormat MeshExportFormat { get; set; } = MeshExportFormat.Native;
+	public LightmapTextureExportFormat LightmapTextureExportFormat { get; set; } = LightmapTextureExportFormat.Yaml;
 
 	/// <summary>
 	/// How are MonoScripts exported? Recommended: Decompiled
@@ -30,6 +31,11 @@ public sealed record class ExportSettings
 	public ScriptLanguageVersion ScriptLanguageVersion { get; set; } = ScriptLanguageVersion.AutoSafe;
 
 	/// <summary>
+	/// If true, type references in scripts are fully qualified.
+	/// </summary>
+	public bool ScriptTypesFullyQualified { get; set; } = false;
+
+	/// <summary>
 	/// How to export shaders?
 	/// </summary>
 	public ShaderExportMode ShaderExportMode { get; set; } = ShaderExportMode.Dummy;
@@ -40,27 +46,23 @@ public sealed record class ExportSettings
 	public SpriteExportMode SpriteExportMode { get; set; } = SpriteExportMode.Yaml;
 
 	/// <summary>
-	/// How terrain data is exported. Recommended: Native
-	/// </summary>
-	public TerrainExportMode TerrainExportMode { get; set; } = TerrainExportMode.Yaml;
-
-	/// <summary>
 	/// How are text assets exported?
 	/// </summary>
 	public TextExportMode TextExportMode { get; set; } = TextExportMode.Parse;
 
 	public bool SaveSettingsToDisk { get; set; }
 
+	public string? LanguageCode { get; set; }
+
 	public void Log()
 	{
 		Logger.Info(LogCategory.General, $"{nameof(AudioExportFormat)}: {AudioExportFormat}");
 		Logger.Info(LogCategory.General, $"{nameof(ImageExportFormat)}: {ImageExportFormat}");
-		Logger.Info(LogCategory.General, $"{nameof(MeshExportFormat)}: {MeshExportFormat}");
+		Logger.Info(LogCategory.General, $"{nameof(LightmapTextureExportFormat)}: {LightmapTextureExportFormat}");
 		Logger.Info(LogCategory.General, $"{nameof(ScriptExportMode)}: {ScriptExportMode}");
 		Logger.Info(LogCategory.General, $"{nameof(ScriptLanguageVersion)}: {ScriptLanguageVersion}");
 		Logger.Info(LogCategory.General, $"{nameof(ShaderExportMode)}: {ShaderExportMode}");
 		Logger.Info(LogCategory.General, $"{nameof(SpriteExportMode)}: {SpriteExportMode}");
-		Logger.Info(LogCategory.General, $"{nameof(TerrainExportMode)}: {TerrainExportMode}");
 		Logger.Info(LogCategory.General, $"{nameof(TextExportMode)}: {TextExportMode}");
 	}
 }

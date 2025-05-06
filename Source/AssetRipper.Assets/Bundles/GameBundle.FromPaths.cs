@@ -18,18 +18,22 @@ partial class GameBundle
 	/// <param name="dependencyProvider"></param>
 	/// <param name="resourceProvider"></param>
 	/// <param name="defaultVersion">The default version to use if a file does not have a version, ie the version has been stripped.</param>
-	public static GameBundle FromPaths(IEnumerable<string> paths, AssetFactoryBase assetFactory, IDependencyProvider? dependencyProvider, IResourceProvider? resourceProvider, UnityVersion defaultVersion = default)
+	public static GameBundle FromPaths(IEnumerable<string> paths, AssetFactoryBase assetFactory, IGameInitializer? initializer = null)
 	{
 		GameBundle gameBundle = new();
-		gameBundle.InitializeFromPaths(paths, assetFactory, dependencyProvider, resourceProvider, defaultVersion);
-		gameBundle.InitializeAllDependencyLists(dependencyProvider);
+		initializer?.OnCreated(gameBundle, assetFactory);
+		gameBundle.InitializeFromPaths(paths, assetFactory, initializer);
+		initializer?.OnPathsLoaded(gameBundle, assetFactory);
+		gameBundle.InitializeAllDependencyLists(initializer?.DependencyProvider);
+		initializer?.OnDependenciesInitialized(gameBundle, assetFactory);
 		return gameBundle;
 	}
 
-	private void InitializeFromPaths(IEnumerable<string> paths, AssetFactoryBase assetFactory, IDependencyProvider? dependencyProvider, IResourceProvider? resourceProvider, UnityVersion defaultVersion = default)
+	private void InitializeFromPaths(IEnumerable<string> paths, AssetFactoryBase assetFactory, IGameInitializer? initializer)
 	{
-		ResourceProvider = resourceProvider;
-		List<FileBase> fileStack = LoadFilesAndDependencies(paths, dependencyProvider);
+		ResourceProvider = initializer?.ResourceProvider;
+		List<FileBase> fileStack = LoadFilesAndDependencies(paths, initializer?.DependencyProvider);
+		UnityVersion defaultVersion = initializer is null ? default : initializer.DefaultVersion;
 
 		while (fileStack.Count > 0)
 		{
@@ -44,6 +48,9 @@ partial class GameBundle
 					break;
 				case ResourceFile resourceFile:
 					AddResource(resourceFile);
+					break;
+				case FailedFile failedFile:
+					AddFailed(failedFile);
 					break;
 			}
 		}
@@ -63,13 +70,26 @@ partial class GameBundle
 		HashSet<string> serializedFileNames = new();//Includes missing dependencies
 		foreach (string path in paths)
 		{
-			FileBase? file = SchemeReader.LoadFile(path);
-			file?.ReadContentsRecursively();
+			FileBase? file;
+			try
+			{
+				file = SchemeReader.LoadFile(path);
+				file.ReadContentsRecursively();
+			}
+			catch (Exception ex)
+			{
+				file = new FailedFile()
+				{
+					Name = Path.GetFileName(path),
+					FilePath = path,
+					StackTrace = ex.ToString(),
+				};
+			}
 			while (file is CompressedFile compressedFile)
 			{
 				file = compressedFile.UncompressedFile;
 			}
-			if (file is ResourceFile resourceFile)
+			if (file is ResourceFile or FailedFile)
 			{
 				files.Add(file);
 			}

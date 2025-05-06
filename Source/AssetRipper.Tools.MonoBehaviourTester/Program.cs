@@ -2,8 +2,8 @@
 using AssetRipper.Import.Logging;
 using AssetRipper.Import.Structure.Assembly;
 using AssetRipper.Import.Structure.Assembly.Managers;
-using AssetRipper.Import.Structure.Assembly.Serializable;
 using AssetRipper.Import.Structure.Platforms;
+using AssetRipper.SerializationLogic;
 
 namespace AssetRipper.Tools.MonoBehaviourTester;
 
@@ -78,10 +78,16 @@ internal static class Program
 
 		try
 		{
-			SerializableType serializableType = AssemblyManager.GetSerializableType(typeId, default);
-			
-			Logger.Info($"Got serializable type: {serializableType}");
-			PrintSerializationInfo(serializableType);
+			if (AssemblyManager.TryGetSerializableType(typeId, out SerializableType? serializableType, out string? failureReason))
+			{
+				Logger.Info($"Got serializable type: {serializableType}");
+				PrintSerializationInfo(serializableType);
+			}
+			else
+			{
+				Logger.Error($"Could not build serializable type - {failureReason}");
+				return 2;
+			}
 		}
 		catch (Exception e)
 		{
@@ -110,7 +116,7 @@ internal static class Program
 		foreach (SerializableType.Field field in type.Fields)
 		{
 			string typeName = field.Type.ToString();
-			if (field.IsArray)
+			if (field.ArrayDepth > 0)
 			{
 				typeName += string.Join("", Enumerable.Repeat("[]", field.ArrayDepth));
 			}

@@ -1,83 +1,65 @@
-﻿using AssetRipper.Assets;
-using AssetRipper.Assets.Bundles;
+﻿using AssetRipper.Assets.Bundles;
 using AssetRipper.Assets.Collections;
 using AssetRipper.Import.Logging;
 using AssetRipper.SourceGenerated;
 using AssetRipper.SourceGenerated.Classes.ClassID_1;
 using AssetRipper.SourceGenerated.Classes.ClassID_1001;
-using AssetRipper.SourceGenerated.Classes.ClassID_114;
-using AssetRipper.SourceGenerated.Classes.ClassID_1660057539;
-using AssetRipper.SourceGenerated.Classes.ClassID_18;
-using AssetRipper.SourceGenerated.Classes.ClassID_2;
-using AssetRipper.SourceGenerated.Classes.ClassID_3;
+using AssetRipper.SourceGenerated.Classes.ClassID_142;
 using AssetRipper.SourceGenerated.Classes.ClassID_4;
-using AssetRipper.SourceGenerated.Enums;
 using AssetRipper.SourceGenerated.Extensions;
-using AssetRipper.SourceGenerated.MarkerInterfaces;
+using System.Diagnostics;
 
-namespace AssetRipper.Processing;
+namespace AssetRipper.Processing.Prefabs;
 
 public sealed class PrefabProcessor : IAssetProcessor
 {
 	public void Process(GameData gameData)
 	{
-		ProcessedBundle processedBundle = gameData.GameBundle.AddNewProcessedBundle("Generated Prefab Assets");
-		ProcessedAssetCollection prefabCollection = processedBundle.AddNewProcessedCollection("Prefabs", gameData.ProjectVersion);
+		ProcessedBundle processedBundle = gameData.GameBundle.AddNewProcessedBundle("Generated Hierarchy Assets");
+		ProcessedAssetCollection prefabHierarchyCollection = processedBundle.AddNewProcessedCollection("Prefab Hierarchies", gameData.ProjectVersion);
+		ProcessedAssetCollection prefabInstanceCollection = processedBundle.AddNewProcessedCollection("Generated Prefabs", gameData.ProjectVersion);
 		Dictionary<SceneDefinition, ProcessedAssetCollection> sceneCollectionDictionary = new();
 
+		AddMissingTransforms(gameData, processedBundle, sceneCollectionDictionary);
+
 		HashSet<IGameObject> gameObjectsAlreadyProcessed = new();
-		List<IGameObject> gameObjectsWithNoTransform = new();
-		foreach (IUnityObjectBase asset in gameData.GameBundle.FetchAssets())
-		{
-			switch (asset)
-			{
-				case IGameObject gameObject:
-					if (!gameObject.TryGetComponent<ITransform>(out _))
-					{
-						gameObjectsWithNoTransform.Add(gameObject);
-					}
-					break;
-				case IPrefabInstance prefab:
-					if (prefab.RootGameObjectP is { } root)
-					{
-						gameObjectsAlreadyProcessed.Add(root);
-					}
-					break;
-			}
-		}
 
-		foreach (IGameObject gameObject in gameObjectsWithNoTransform)
+		//Create scene hierarchies
+		foreach (SceneDefinition scene in gameData.GameBundle.Scenes.ToList())
 		{
-			Logger.Warning(LogCategory.Processing, $"GameObject {gameObject.Name} has no Transform. Adding one.");
+			ProcessedAssetCollection sceneCollection = GetOrCreateSceneCollection(gameData, processedBundle, sceneCollectionDictionary, scene);
+			SceneHierarchyObject sceneHierarchy = SceneHierarchyObject.Create(sceneCollection, scene);
+			gameObjectsAlreadyProcessed.AddRange(sceneHierarchy.GameObjects);
 
-			ProcessedAssetCollection collection;
-			if (gameObject.Collection.IsScene)
+			Bundle? bundle = scene.Collections.Select(c => c.Bundle).FirstOrDefault(b => b is SerializedBundle);
+			if (bundle is not null)
 			{
-				SceneDefinition scene = gameObject.Collection.Scene;
-				if (sceneCollectionDictionary.TryGetValue(scene, out ProcessedAssetCollection? sceneCollection))
+				IAssetBundle? assetBundleAsset = bundle.FetchAssets().OfType<IAssetBundle>().FirstOrDefault();
+				if (assetBundleAsset is not null)
 				{
-					collection = sceneCollection;
+					Debug.Assert(!assetBundleAsset.Has_IsStreamedSceneAssetBundle() || assetBundleAsset.IsStreamedSceneAssetBundle);
+					sceneHierarchy.AssetBundleName = assetBundleAsset.GetAssetBundleName();
 				}
 				else
 				{
-					collection = processedBundle.AddNewProcessedCollection(scene.Name, gameData.ProjectVersion);
-					scene.AddCollection(collection);
-					sceneCollectionDictionary.Add(scene, collection);
+					sceneHierarchy.AssetBundleName = bundle.Name;
 				}
 			}
-			else
-			{
-				collection = prefabCollection;
-			}
-
-			ITransform transform = collection.CreateAsset((int)ClassIDType.Transform, Transform.Create);
-
-			transform.InitializeDefault();
-
-			transform.GameObject_C4P = gameObject;
-			gameObject.AddComponent(ClassIDType.Transform, transform);
 		}
 
+		//Create hierarchies for prefabs with an existing PrefabInstance
+		foreach (IPrefabInstance prefab in gameData.GameBundle.FetchAssets().OfType<IPrefabInstance>())
+		{
+			if (prefab.RootGameObjectP is { } root && !gameObjectsAlreadyProcessed.Contains(root))
+			{
+				prefab.SetPrefabInternal();
+
+				PrefabHierarchyObject prefabHierarchy = PrefabHierarchyObject.Create(prefabHierarchyCollection, root, prefab);
+				gameObjectsAlreadyProcessed.AddRange(prefabHierarchy.GameObjects);
+			}
+		}
+
+		//Create hierarchies for prefabs without an existing PrefabInstance
 		foreach (IGameObject asset in gameData.GameBundle.FetchAssets().OfType<IGameObject>())
 		{
 			if (gameObjectsAlreadyProcessed.Contains(asset))
@@ -88,104 +70,60 @@ public sealed class PrefabProcessor : IAssetProcessor
 			IGameObject root = asset.GetRoot();
 			if (gameObjectsAlreadyProcessed.Add(root))
 			{
-				if (root.Collection.IsScene)
-				{
-					SceneHierarchyObject sceneHierarchy = CreateSceneHierarchyObject(prefabCollection, root.Collection.Scene);
-					gameObjectsAlreadyProcessed.AddRange(sceneHierarchy.GameObjects);
-					sceneHierarchy.SetMainAssets();
-				}
-				else
-				{
-					IPrefabInstance prefab = CreatePrefab(prefabCollection, root);
+				IPrefabInstance prefab = root.CreatePrefabForRoot(prefabInstanceCollection);
 
-					//Prior to 2018.3, Prefab was an actual asset inside "*.prefab" files.
-					if (prefab is IPrefabMarker prefabMarker)
-					{
-						foreach (IEditorExtension editorExtension in root.FetchHierarchy())
-						{
-							editorExtension.PrefabInternal_C18P = prefabMarker;
-						}
-					}
-
-					PrefabHierarchyObject prefabHierarchy = CreatePrefabHierarchyObject(prefabCollection, root, prefab);
-					gameObjectsAlreadyProcessed.AddRange(prefabHierarchy.GameObjects);
-					prefabHierarchy.SetMainAssets();
-				}
+				PrefabHierarchyObject prefabHierarchy = PrefabHierarchyObject.Create(prefabHierarchyCollection, root, prefab);
+				gameObjectsAlreadyProcessed.AddRange(prefabHierarchy.GameObjects);
 			}
 		}
 	}
 
-	private static IPrefabInstance CreatePrefab(ProcessedAssetCollection virtualFile, IGameObject root)
+	private static void AddMissingTransforms(GameData gameData, ProcessedBundle processedBundle, Dictionary<SceneDefinition, ProcessedAssetCollection> sceneCollectionDictionary)
 	{
-		IPrefabInstance prefab = virtualFile.CreateAsset((int)ClassIDType.PrefabInstance, PrefabInstance.Create);
-
-		prefab.HideFlagsE = HideFlags.HideInHierarchy;
-		prefab.RootGameObjectP = root;
-		prefab.IsPrefabAsset = true;
-		prefab.AssetBundleName = root.AssetBundleName;
-		prefab.OriginalDirectory = root.OriginalDirectory;
-		prefab.OriginalName = root.OriginalName;
-		prefab.OriginalExtension = root.OriginalExtension;
-
-		return prefab;
-	}
-
-	private static SceneHierarchyObject CreateSceneHierarchyObject(ProcessedAssetCollection virtualFile, SceneDefinition scene)
-	{
-		SceneHierarchyObject sceneHierarchy = virtualFile.CreateAsset((int)ClassIDType.SceneAsset, (assetInfo) => new SceneHierarchyObject(assetInfo, scene));
-
-		foreach (IUnityObjectBase asset in scene.Assets)
+		ProcessedAssetCollection missingPrefabTransformCollection = processedBundle.AddNewProcessedCollection("Missing Prefab Transforms", gameData.ProjectVersion);
+		foreach (IGameObject gameObject in gameData.GameBundle.FetchAssets().OfType<IGameObject>().Where(HasNoTransform))
 		{
-			switch (asset)
+			Logger.Warning(LogCategory.Processing, $"GameObject {gameObject.Name} has no Transform. Adding one.");
+
+			ProcessedAssetCollection collection;
+			if (gameObject.Collection.IsScene)
 			{
-				case IGameObject gameObject:
-					sceneHierarchy.GameObjects.Add(gameObject);
-					break;
-				case IMonoBehaviour monoBehaviour:
-					if (monoBehaviour.IsSceneObject())
-					{
-						sceneHierarchy.Components.Add(monoBehaviour);
-					}
-					break;
-				case IComponent component:
-					sceneHierarchy.Components.Add(component);
-					break;
-				case ILevelGameManager manager:
-					sceneHierarchy.Managers.Add(manager);
-					break;
-				case IPrefabInstance prefabInstance:
-					sceneHierarchy.PrefabInstances.Add(prefabInstance);
-					break;
-				case ISceneRoots sceneRoots:
-					sceneHierarchy.SceneRoots = sceneRoots;
-					break;
+				SceneDefinition scene = gameObject.Collection.Scene;
+				collection = GetOrCreateSceneCollection(gameData, processedBundle, sceneCollectionDictionary, scene);
 			}
+			else
+			{
+				collection = missingPrefabTransformCollection;
+			}
+
+			ITransform transform = collection.CreateAsset((int)ClassIDType.Transform, Transform.Create);
+
+			transform.InitializeDefault();
+
+			transform.GameObject_C4P = gameObject;
+			gameObject.AddComponent(ClassIDType.Transform, transform);
 		}
-
-		sceneHierarchy.SetMainAssets();
-
-		return sceneHierarchy;
 	}
 
-	private static PrefabHierarchyObject CreatePrefabHierarchyObject(ProcessedAssetCollection virtualFile, IGameObject root, IPrefabInstance prefab)
+	private static ProcessedAssetCollection GetOrCreateSceneCollection(GameData gameData, ProcessedBundle processedBundle, Dictionary<SceneDefinition, ProcessedAssetCollection> sceneCollectionDictionary, SceneDefinition scene)
 	{
-		PrefabHierarchyObject prefabHierarchy = virtualFile.CreateAsset((int)ClassIDType.PrefabInstance, (assetInfo) => new PrefabHierarchyObject(assetInfo, root, prefab));
-
-		foreach (IEditorExtension asset in root.FetchHierarchy())
+		ProcessedAssetCollection collection;
+		if (sceneCollectionDictionary.TryGetValue(scene, out ProcessedAssetCollection? sceneCollection))
 		{
-			switch (asset)
-			{
-				case IGameObject gameObject:
-					prefabHierarchy.GameObjects.Add(gameObject);
-					break;
-				case IComponent component:
-					prefabHierarchy.Components.Add(component);
-					break;
-			}
+			collection = sceneCollection;
+		}
+		else
+		{
+			collection = processedBundle.AddNewProcessedCollection(scene.Name + " (Generated Assets)", gameData.ProjectVersion);
+			scene.AddCollection(collection);
+			sceneCollectionDictionary.Add(scene, collection);
 		}
 
-		prefabHierarchy.SetMainAssets();
+		return collection;
+	}
 
-		return prefabHierarchy;
+	private static bool HasNoTransform(IGameObject gameObject)
+	{
+		return !gameObject.TryGetComponent<ITransform>(out _);
 	}
 }

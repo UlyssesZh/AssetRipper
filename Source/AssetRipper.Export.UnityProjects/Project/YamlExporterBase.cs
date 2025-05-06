@@ -1,8 +1,5 @@
 using AssetRipper.Assets;
-using AssetRipper.Assets.Export;
-using AssetRipper.Assets.Metadata;
 using AssetRipper.Export.Modules.Shaders.IO;
-using AssetRipper.IO.Files;
 using AssetRipper.Yaml;
 using System.Text;
 
@@ -12,39 +9,41 @@ namespace AssetRipper.Export.UnityProjects.Project
 	{
 		public abstract bool TryCreateCollection(IUnityObjectBase asset, [NotNullWhen(true)] out IExportCollection? exportCollection);
 
-		public bool Export(IExportContainer container, IUnityObjectBase asset, string path)
+		public bool Export(IExportContainer container, IUnityObjectBase asset, string path, FileSystem fileSystem)
 		{
-			using Stream fileStream = File.Create(path);
+			using Stream fileStream = fileSystem.File.Create(path);
 			using InvariantStreamWriter streamWriter = new InvariantStreamWriter(fileStream, UTF8);
 			YamlWriter writer = new();
-			YamlDocument doc = asset.ExportYamlDocument(container);
+			ProjectYamlWalker walker = new(container);
+			YamlDocument doc = walker.ExportYamlDocument(asset);
 			writer.AddDocument(doc);
 			writer.Write(streamWriter);
 			return true;
 		}
 
-		public void Export(IExportContainer container, IUnityObjectBase asset, string path, Action<IExportContainer, IUnityObjectBase, string>? callback)
+		public void Export(IExportContainer container, IUnityObjectBase asset, string path, FileSystem fileSystem, Action<IExportContainer, IUnityObjectBase, string, FileSystem>? callback)
 		{
-			Export(container, asset, path);
-			callback?.Invoke(container, asset, path);
+			Export(container, asset, path, fileSystem);
+			callback?.Invoke(container, asset, path, fileSystem);
 		}
 
-		public bool Export(IExportContainer container, IEnumerable<IUnityObjectBase> assets, string path)
+		public bool Export(IExportContainer container, IEnumerable<IUnityObjectBase> assets, string path, FileSystem fileSystem)
 		{
-			using Stream fileStream = File.Create(path);
+			using Stream fileStream = fileSystem.File.Create(path);
 			using InvariantStreamWriter streamWriter = new InvariantStreamWriter(fileStream, UTF8);
 			YamlWriter writer = new();
 			writer.WriteHead(streamWriter);
+			ProjectYamlWalker walker = new(container);
 			foreach (IUnityObjectBase asset in assets)
 			{
-				YamlDocument doc = asset.ExportYamlDocument(container);
+				YamlDocument doc = walker.ExportYamlDocument(asset);
 				writer.WriteDocument(doc);
 			}
 			writer.WriteTail(streamWriter);
 			return true;
 		}
 
-		public void Export(IExportContainer container, IEnumerable<IUnityObjectBase> assets, string path, Action<IExportContainer, IUnityObjectBase, string>? callback)
+		public void Export(IExportContainer container, IEnumerable<IUnityObjectBase> assets, string path, FileSystem fileSystem, Action<IExportContainer, IUnityObjectBase, string, FileSystem>? callback)
 		{
 			throw new NotSupportedException("Yaml supports only single file export");
 		}
@@ -61,24 +60,5 @@ namespace AssetRipper.Export.UnityProjects.Project
 		}
 
 		private static readonly Encoding UTF8 = new UTF8Encoding(false);
-
-		private sealed class YamlWalker(IExportContainer container, TextWriter innerWriter) : DefaultYamlWalker(innerWriter)
-		{
-			public IUnityObjectBase CurrentAsset { get; set; } = null!;
-
-			public override void WritePPtr<TAsset>(PPtr<TAsset> pptr)
-			{
-				TAsset? asset = CurrentAsset.Collection.TryGetAsset(pptr);
-				if (asset is null)
-				{
-					Writer.Write("{fileID: 0}");
-				}
-				else
-				{
-					MetaPtr metaPtr = container.CreateExportPointer(asset);
-					Writer.Write(metaPtr.ToString());
-				}
-			}
-		}
 	}
 }

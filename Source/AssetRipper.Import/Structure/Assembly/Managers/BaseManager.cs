@@ -1,8 +1,7 @@
 ﻿using AsmResolver.DotNet;
-using AssetRipper.Import.Structure.Assembly.Mono;
-using AssetRipper.Import.Structure.Assembly.Serializable;
+using AsmResolver.DotNet.Signatures;
 using AssetRipper.Import.Structure.Platforms;
-using AssetRipper.IO.Files.Utils;
+using AssetRipper.IO.Files;
 using AssetRipper.SerializationLogic;
 
 namespace AssetRipper.Import.Structure.Assembly.Managers
@@ -13,9 +12,9 @@ namespace AssetRipper.Import.Structure.Assembly.Managers
 		public virtual ScriptingBackend ScriptingBackend => ScriptingBackend.Unknown;
 
 		protected readonly Dictionary<string, AssemblyDefinition?> m_assemblies = new();
-		protected readonly Dictionary<AssemblyDefinition, Stream> m_assemblyStreams = new();
+		protected readonly Dictionary<AssemblyDefinition, Stream> m_assemblyStreams = new(SignatureComparer.Default);
 		protected readonly Dictionary<string, bool> m_validTypes = new();
-		private readonly Dictionary<TypeDefinition, MonoType> monoTypeCache = new();
+		private readonly Dictionary<ITypeDefOrRef, SerializableType> monoTypeCache = new(SignatureComparer.Default);
 
 		private event Action<string> m_requestAssemblyCallback;
 		private readonly Dictionary<string, SerializableType> m_serializableTypes = new();
@@ -32,7 +31,7 @@ namespace AssetRipper.Import.Structure.Assembly.Managers
 
 		protected static string GetUniqueName(ITypeDefOrRef type)
 		{
-			string assembly = FilenameUtils.RemoveAssemblyFileExtension(type.Scope?.Name ?? "");
+			string assembly = SpecialFileNames.RemoveAssemblyFileExtension(type.Scope?.Name ?? "");
 			return ScriptIdentifier.ToUniqueName(assembly, type.FullName);
 		}
 
@@ -47,13 +46,21 @@ namespace AssetRipper.Import.Structure.Assembly.Managers
 			{
 				throw new BadImageFormatException($"Could not read {filePath}", badImageFormatException);
 			}
-			assembly.InitializeResolvers(this);
+
 			string fileName = Path.GetFileNameWithoutExtension(filePath);
-			string assemblyName = ToAssemblyName(assembly);
 			m_assemblies.Add(fileName, assembly);
-			m_assemblies[assemblyName] = assembly;
+
 			FileStream stream = File.OpenRead(filePath);
 			m_assemblyStreams.Add(assembly, stream);
+
+			Add(assembly);
+		}
+
+		public void Add(AssemblyDefinition assembly)
+		{
+			assembly.InitializeResolvers(this);
+			string assemblyName = ToAssemblyName(assembly);
+			m_assemblies[assemblyName] = assembly;
 		}
 
 		public Stream GetStreamForAssembly(AssemblyDefinition assembly)
@@ -78,7 +85,7 @@ namespace AssetRipper.Import.Structure.Assembly.Managers
 
 		private static string ToAssemblyName(AssemblyDefinition assembly)
 		{
-			return FilenameUtils.RemoveAssemblyFileExtension(assembly.Name?.ToString() ?? "");
+			return SpecialFileNames.RemoveAssemblyFileExtension(assembly.Name?.ToString() ?? "");
 		}
 
 		public virtual void Read(Stream stream, string fileName)
@@ -176,19 +183,36 @@ namespace AssetRipper.Import.Structure.Assembly.Managers
 			return new ScriptIdentifier(assembly, type.Namespace ?? "", type.Name ?? "");
 		}
 
-		public virtual SerializableType GetSerializableType(ScriptIdentifier scriptID, UnityVersion version)
+		public bool TryGetSerializableType(
+			ScriptIdentifier scriptID,
+			[NotNullWhen(true)] out SerializableType? scriptType,
+			[NotNullWhen(false)] out string? failureReason)
 		{
-			string uniqueName = scriptID.UniqueName;
-			if (m_serializableTypes.TryGetValue(uniqueName, out SerializableType? sType))
+			if (m_serializableTypes.TryGetValue(scriptID.UniqueName, out scriptType))
 			{
-				return sType;
+				failureReason = null;
+				return true;
 			}
-			TypeDefinition type = FindType(scriptID) ?? throw new ArgumentException($"Can't find type {scriptID.UniqueName}");
-			if (monoTypeCache.TryGetValue(type, out MonoType? monoType))
+			TypeDefinition? type = FindType(scriptID);
+			if (type is null)
 			{
-				return monoType;
+				scriptType = null;
+				failureReason = $"Can't find type: {scriptID.UniqueName}";
+				return false;
 			}
-			return new MonoType(type, monoTypeCache);
+			else if (monoTypeCache.TryGetValue(type, out SerializableType? monoType)
+				|| new FieldSerializer(new UnityVersion(6000)).TryCreateSerializableType(type, monoTypeCache, out monoType, out failureReason))
+			{
+				// Todo: Use the actual Unity version when constructing the FieldSerializer
+				scriptType = monoType;
+				failureReason = null;
+				return true;
+			}
+			else
+			{
+				scriptType = null;
+				return false;
+			}
 		}
 
 		internal void AddSerializableType(ITypeDefOrRef type, SerializableType scriptType)
@@ -200,11 +224,6 @@ namespace AssetRipper.Import.Structure.Assembly.Managers
 		internal void InvokeRequestAssemblyCallback(string assemblyName) => m_requestAssemblyCallback.Invoke(assemblyName);
 
 		internal void AddSerializableType(string uniqueName, SerializableType scriptType) => m_serializableTypes.Add(uniqueName, scriptType);
-
-		internal bool TryGetSerializableType(string uniqueName, [NotNullWhen(true)] out SerializableType? scriptType)
-		{
-			return m_serializableTypes.TryGetValue(uniqueName, out scriptType);
-		}
 
 		protected AssemblyDefinition? FindAssembly(string name)
 		{

@@ -7,6 +7,7 @@ using AssetRipper.SourceGenerated.Extensions.Enums.Shader;
 using AssetRipper.SourceGenerated.Extensions.Enums.Shader.GpuProgramType;
 using AssetRipper.SourceGenerated.Extensions.Enums.Shader.SerializedShader;
 using AssetRipper.SourceGenerated.Subclasses.SerializedPass;
+using AssetRipper.SourceGenerated.Subclasses.SerializedPlayerSubProgram;
 using AssetRipper.SourceGenerated.Subclasses.SerializedProgram;
 using AssetRipper.SourceGenerated.Subclasses.SerializedProperties;
 using AssetRipper.SourceGenerated.Subclasses.SerializedProperty;
@@ -26,7 +27,7 @@ namespace AssetRipper.Export.Modules.Shaders.IO
 		public static void Export(this ISerializedPass _this, ShaderWriter writer)
 		{
 			writer.WriteIndent(2);
-			writer.Write($"{_this.Type.ToString()} ");
+			writer.Write($"{((SerializedPassType)_this.Type).ToString()} ");
 
 			if (_this.Type == (int)SerializedPassType.UsePass)
 			{
@@ -87,17 +88,38 @@ namespace AssetRipper.Export.Modules.Shaders.IO
 
 		public static void Export(this ISerializedProgram _this, ShaderWriter writer, ShaderType type)
 		{
-			if (_this.SubPrograms.Count == 0)
+			if (_this.Has_PlayerSubPrograms())
 			{
-				return;
+				if (_this.GetPlayerSubPrograms().Count == 0)
+				{
+					return;
+				}
+			}
+			else
+			{
+				if (_this.SubPrograms.Count == 0)
+				{
+					return;
+				}
 			}
 
 			writer.WriteIndent(3);
 			writer.Write($"Program \"{type.ToProgramTypeString()}\" {{\n");
-			int tierCount = _this.GetTierCount();
-			for (int i = 0; i < _this.SubPrograms.Count; i++)
+			if (_this.Has_PlayerSubPrograms())
 			{
-				_this.SubPrograms[i].Export(writer, type, tierCount > 1);
+				IReadOnlyList<ISerializedPlayerSubProgram> subPrograms = _this.GetPlayerSubPrograms();
+				for (int i = 0; i < subPrograms.Count; i++)
+				{
+					subPrograms[i].Export(_this.GetParameterBlobIndices()[i], writer, type);
+				}
+			}
+			else
+			{
+				int tierCount = _this.GetTierCount();
+				for (int i = 0; i < _this.SubPrograms.Count; i++)
+				{
+					_this.SubPrograms[i].Export(writer, type, tierCount > 1);
+				}
 			}
 			writer.WriteIndent(3);
 			writer.Write("}\n");
@@ -153,6 +175,9 @@ namespace AssetRipper.Export.Modules.Shaders.IO
 			switch (_this.GetType_())
 			{
 				case SerializedPropertyType.Color:
+					writer.Write("Color");
+					break;
+
 				case SerializedPropertyType.Vector:
 					writer.Write("Vector");
 					break;
@@ -311,7 +336,10 @@ namespace AssetRipper.Export.Modules.Shaders.IO
 						writer.Write('A');
 					}
 				}
-				writer.Write($" {index}\n");
+				if (index != -1) { 
+					writer.Write($" {index}");
+				}
+				writer.Write($"\n");
 			}
 		}
 
@@ -445,7 +473,16 @@ namespace AssetRipper.Export.Modules.Shaders.IO
 		public static void Export(this ISerializedStencilOp _this, TextWriter writer, StencilType type)
 		{
 			writer.WriteIndent(4);
-			writer.Write($"Comp{type.ToSuffixString()} {_this.CompValue()}\n");
+			if (_this.CompValue() == StencilComp.Disabled)
+			{
+				// When the value is set to 'Disabled', it indicates that this is the default value defined using Properties.
+				// https://github.com/AssetRipper/AssetRipper/pull/1337
+				writer.Write($"Comp{type.ToSuffixString()} [{_this.CompValue()}]\n");
+			}
+			else 
+			{ 
+				writer.Write($"Comp{type.ToSuffixString()} {_this.CompValue()}\n");
+			}
 			writer.WriteIndent(4);
 			writer.Write($"Pass{type.ToSuffixString()} {_this.PassValue()}\n");
 			writer.WriteIndent(4);
@@ -469,7 +506,25 @@ namespace AssetRipper.Export.Modules.Shaders.IO
 			writer.WriteIndent(5);
 
 			int platformIndex = writer.Shader.Platforms!.IndexOf((uint)graphicApi);//ISerializedSubProgram and Platforms both only exist on 5.5+
-			writer.Blobs[platformIndex].SubPrograms[_this.BlobIndex].Export(writer, type);
+			writer.Blobs[platformIndex].GetSubProgram(_this.BlobIndex).Export(writer, type);
+
+			writer.Write('\n');
+			writer.WriteIndent(4);
+			writer.Write("}\n");
+		}
+
+		public static void Export(this ISerializedPlayerSubProgram _this, uint paramBlobIndex, ShaderWriter writer, ShaderType type)
+		{
+			writer.WriteIndent(4);
+#warning TODO: convertion (DX to HLSL)
+			ShaderGpuProgramType programType = _this.GetProgramType(writer.Version);
+			GPUPlatform graphicApi = programType.ToGPUPlatform(writer.Platform);
+			writer.Write($"SubProgram \"{graphicApi} ");
+			writer.Write("\" {\n");
+			writer.WriteIndent(5);
+
+			int platformIndex = writer.Shader.Platforms!.IndexOf((uint)graphicApi);
+			writer.Blobs[platformIndex].GetSubProgram(_this.BlobIndex, paramBlobIndex).Export(writer, type);
 
 			writer.Write('\n');
 			writer.WriteIndent(4);
@@ -576,7 +631,7 @@ namespace AssetRipper.Export.Modules.Shaders.IO
 				}
 
 				// we don't know shader type so pass vertex
-				_this.SubPrograms[subIndex].Export(writer, ShaderType.Vertex);
+				_this.GetSubProgram((uint)subIndex).Export(writer, ShaderType.Vertex);
 			}
 			writer.WriteString(header, j, header.Length - j);
 		}
